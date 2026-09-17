@@ -103,21 +103,26 @@ pub const SIDE_H: i32 = 72;
 /// centre line. The compass and the power menu draw their side choices through this too,
 /// so the same physical key is always labelled at the same height in the same face.
 pub fn side_label(f: &mut Frame, y: i32, label: &str, inverted: bool) {
-    let (rot, r) = side_label_plate(f, y, label);
+    // `y` identifies the key, and the key decides the edge: Up is left of the
+    // screen, Down is right of it.
+    let left = y < (SIDE_UP_Y + SIDE_H / 2 + SIDE_DOWN_Y + SIDE_H / 2) / 2;
+    let (rot, r) = side_label_plate(f, y, label, left);
     f.fill_rect(r, if inverted { Ink::Black } else { Ink::White });
-    paint_side_label(f, &rot, r, y, inverted);
+    paint_side_label(f, &rot, r, y, inverted, left);
 }
 
 /// The rotated text of a side label and the rect it occupies, centred on `y` and kept
 /// between the running head and the rail.
-fn side_label_plate(f: &Frame, y: i32, label: &str) -> (String, Rect) {
+fn side_label_plate(f: &Frame, y: i32, label: &str, left: bool) -> (String, Rect) {
     let font = quire_fonts::ui::mono();
     let text = ellipsis(font, label, SIDE_H + 28);
     let tw = measure_text(font, &text, TextStyle::INK) + 8;
     let th = line_h(font) + 2;
     let w = f.width() as i32;
     let h = f.height() as i32;
-    let x = w - 10 - th;
+    // A label belongs against the key it names, and the two keys are on opposite
+    // edges of the screen.
+    let x = if left { 10 } else { w - 10 - th };
     let top = (y - tw / 2).clamp(CONTENT_TOP, h - RAIL_H - 6 - tw);
     (text, Rect::new(x, top, th as u32, tw as u32))
 }
@@ -126,13 +131,14 @@ fn side_label_plate(f: &Frame, y: i32, label: &str) -> (String, Rect) {
 /// bottom to top, like a spine: the glyphs are blitted transposed straight into the
 /// frame, with the baseline on the column at `r.x + 1 + ascent` and the pen starting
 /// 4 px in from the bottom of the plate.
-fn paint_side_label(f: &mut Frame, text: &str, r: Rect, key_y: i32, inverted: bool) {
+fn paint_side_label(f: &mut Frame, text: &str, r: Rect, key_y: i32, inverted: bool, left: bool) {
     let font = quire_fonts::ui::mono();
     let w = f.width() as i32;
     let style = TextStyle { inverted, ..TextStyle::INK };
     quire_gfx::draw_text_ccw(f, font, r.x + 1 + font.ascent(), r.bottom() - 5, text, style);
-    // Tick at the edge, centred on the key.
-    f.fill_rect(Rect::new(w - 4, key_y - 12, 2, 24), Ink::Black);
+    // Tick at the edge the key is on, centred on it.
+    let tick_x = if left { 2 } else { w - 4 };
+    f.fill_rect(Rect::new(tick_x, key_y - 12, 2, 24), Ink::Black);
 }
 
 /// Side labels beside Up and Down (only when the side keys act). `boxed` is kept for
@@ -142,25 +148,17 @@ fn paint_side_label(f: &mut Frame, text: &str, r: Rect, key_y: i32, inverted: bo
 pub fn side_labels(f: &mut Frame, up: Option<&str>, down: Option<&str>, boxed: bool) {
     let _ = boxed;
     let (uy, dy) = (SIDE_UP_Y + SIDE_H / 2, SIDE_DOWN_Y + SIDE_H / 2);
-    match (up, down) {
-        (Some(u), Some(d)) => {
-            let (ur, mut ua) = side_label_plate(f, uy, u);
-            let (dr, mut da) = side_label_plate(f, dy, d);
-            let overlap = ua.bottom() + 12 - da.y;
-            if overlap > 0 {
-                let shift = (overlap + 1) / 2;
-                ua.y -= shift;
-                da.y += shift;
-            }
-            // Both plates first, then both texts: neither erases the other's edge.
-            f.fill_rect(ua, Ink::White);
-            f.fill_rect(da, Ink::White);
-            paint_side_label(f, &ur, ua, uy, false);
-            paint_side_label(f, &dr, da, dy, false);
-        }
-        (Some(u), None) => side_label(f, uy, u, false),
-        (None, Some(d)) => side_label(f, dy, d, false),
-        (None, None) => {}
+    // The X3 carries one side key either side of the screen, so the labels never
+    // share an edge and cannot run into one another.
+    if let Some(u) = up {
+        let (t, r) = side_label_plate(f, uy, u, true);
+        f.fill_rect(r, Ink::White);
+        paint_side_label(f, &t, r, uy, false, true);
+    }
+    if let Some(d) = down {
+        let (t, r) = side_label_plate(f, dy, d, false);
+        f.fill_rect(r, Ink::White);
+        paint_side_label(f, &t, r, dy, false, false);
     }
 }
 
