@@ -317,18 +317,29 @@ impl<E: Env> Screen<E> for KeyboardScreen {
                 Action::Redraw
             }
             Key::Confirm => self.activate(cx),
+            // The two side keys walk the keys in reading order rather than jumping a
+            // whole row at a time. Moving sideways otherwise needs a long press of the
+            // bottom keys, whose short press is already Shift and Done, so a reader
+            // pressing the only keys that plainly move the cursor could go q, a, z and
+            // no further along a row. Stepping one key at a time crosses the row ends
+            // by itself, so both directions reach every key.
             Key::Up => {
                 let (r, c) = self.focus;
-                let nr = if r == 0 { rows - 1 } else { r - 1 };
-                let len = self.row_len(nr).max(1);
-                self.focus = (nr, c.min(len - 1));
+                self.focus = if c > 0 {
+                    (r, c - 1)
+                } else {
+                    let nr = if r == 0 { rows - 1 } else { r - 1 };
+                    (nr, self.row_len(nr).max(1) - 1)
+                };
                 Action::Redraw
             }
             Key::Down => {
                 let (r, c) = self.focus;
-                let nr = (r + 1) % rows;
-                let len = self.row_len(nr).max(1);
-                self.focus = (nr, c.min(len - 1));
+                self.focus = if c + 1 < self.row_len(r).max(1) {
+                    (r, c + 1)
+                } else {
+                    ((r + 1) % rows, 0)
+                };
                 Action::Redraw
             }
             Key::Left | Key::Right => {
