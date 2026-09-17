@@ -11,6 +11,8 @@ pub enum Route {
     Captive,
     /// An OS captive-portal probe: redirect to `/captive`.
     CaptiveProbe,
+    /// Apple's reachability probe, answered with the success page it wants.
+    AppleProbe,
     /// PWA manifest.
     Manifest,
     /// Service worker.
@@ -71,8 +73,6 @@ impl Route {
 const PROBES: &[&str] = &[
     "/generate_204",
     "/gen_204",
-    "/hotspot-detect.html",
-    "/library/test/success.html",
     "/connecttest.txt",
     "/ncsi.txt",
     "/redirect",
@@ -81,6 +81,18 @@ const PROBES: &[&str] = &[
     "/check_network_status.txt",
     "/mobile/status.php",
 ];
+
+/// The paths iOS and macOS probe, answered with the page they are looking for.
+///
+/// Anything else — a redirect to the portal, which is what the other probes get
+/// — tells them the network is behind a sign-in, and once that sheet is closed
+/// they treat a network with no route to the internet as a bad one and leave for
+/// a better one, mid-transfer. The reader is the whole point of this network, so
+/// it says what keeps them on it.
+const APPLE_PROBES: &[&str] = &["/hotspot-detect.html", "/library/test/success.html"];
+
+/// What macOS and iOS expect from their probe, byte for byte.
+pub const APPLE_SUCCESS: &str = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
 
 /// Route `method` + `path` (the path as sent, percent-encoded, without the query).
 pub fn route(method: &str, path: &str) -> Route {
@@ -129,6 +141,9 @@ pub fn route(method: &str, path: &str) -> Route {
             "DELETE" => Route::FileDelete(p),
             _ => Route::MethodNotAllowed,
         };
+    }
+    if APPLE_PROBES.contains(&path) {
+        return if get { Route::AppleProbe } else { Route::MethodNotAllowed };
     }
     if PROBES.contains(&path) {
         return Route::CaptiveProbe;
@@ -198,7 +213,14 @@ mod tests {
         assert_eq!(route("POST", "/upload"), Route::Upload);
         assert_eq!(route("GET", "/upload"), Route::MethodNotAllowed);
         assert_eq!(route("GET", "/generate_204"), Route::CaptiveProbe);
-        assert_eq!(route("GET", "/hotspot-detect.html"), Route::CaptiveProbe);
+        // Apple's two probes are answered rather than redirected, so that iOS and
+        // macOS stay on a network that has nothing beyond the reader.
+        assert_eq!(route("GET", "/hotspot-detect.html"), Route::AppleProbe);
+        assert_eq!(route("GET", "/library/test/success.html"), Route::AppleProbe);
+        assert_eq!(route("POST", "/hotspot-detect.html"), Route::MethodNotAllowed);
+        // Byte for byte what they look for: anything else reads as a portal.
+        assert!(APPLE_SUCCESS.contains("<TITLE>Success</TITLE>"));
+        assert!(APPLE_SUCCESS.contains("<BODY>Success</BODY>"));
         assert_eq!(route("GET", "/nothing"), Route::NotFound);
         assert_eq!(route("POST", "/api/fetch"), Route::Fetch);
     }
