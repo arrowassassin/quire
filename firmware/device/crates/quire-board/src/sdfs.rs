@@ -76,6 +76,17 @@ impl SdFs {
     /// Bring the card up on the shared bus: initialise at 400 kHz, then run at 20 MHz.
     pub fn mount(bus: &'static SharedBus, cs: Output<'static>, vm_cell: &'static static_cell::StaticCell<Vm>) -> Result<SdFs, String> {
         bus.set_rate(Role::Card, 400_000);
+        // The card needs at least 74 clocks at 400 kHz with no chip select asserted
+        // before it will answer CMD0 — it uses them to bring its own logic up. The
+        // driver deliberately leaves this to the caller (it cannot deassert a chip
+        // select it does not own), and warns that some cards tolerate its absence and
+        // some do not. A card that does not answers CardNotFound, which reads on the
+        // screen as no card at all. Ten bytes with `cs` still high is eighty clocks.
+        {
+            use embedded_hal::spi::SpiBus;
+            let mut warmup: BusHandle<'_> = bus.handle(Role::Card);
+            warmup.write(&[0xFF; 10]).map_err(|e| alloc::format!("warmup: {e:?}"))?;
+        }
         let dev = ExclusiveDevice::new(bus.handle(Role::Card), cs, Delay::new()).map_err(|_| String::from("cs"))?;
         let card = SdCard::new(dev, Delay::new());
         let card_bytes = card.num_bytes().map_err(|e| alloc::format!("card: {e:?}"))?;

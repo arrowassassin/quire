@@ -285,7 +285,15 @@ where
 
         // Select the CSD layout from the CSD_STRUCTURE field (bits 127:126);
         // note that it is independent from the Physical Layer v2.00+ (`card_type`).
-        csd::Csd::new(&csd_raw).map_err(|_| Error::RegisterReadError)
+        //
+        // The CRC7 the register carries is deliberately not checked. Over SPI the
+        // card sends the CSD as a data block with its own CRC16, which `read_data`
+        // has already accepted, and the register's own CRC7 is redundant there.
+        // Cards differ on whether they trouble to fill it in: a 16 GB SDHC here
+        // returns the whole field as zero — end bit included, which no valid CSD
+        // would do — and verifying it refuses a card whose contents are perfectly
+        // good. The contents are what we want, and the block CRC vouches for them.
+        csd::Csd::new_unchecked(&csd_raw).map_err(|_| Error::RegisterReadError)
     }
 
     /// Read an arbitrary number of bytes from the card using the SD Card

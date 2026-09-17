@@ -174,18 +174,26 @@ impl<E: Env> Screen<E> for KeyboardScreen {
     fn draw(&mut self, cx: &mut Ctx<E>, f: &mut Frame) -> Refresh {
         let w = f.width() as i32;
         running_head(f, &self.title, None);
-        // Phone strip.
+        // Phone strip — only when a phone could actually reach the reader. The
+        // address is served by the reader itself, so with the radio off it is a
+        // QR code and a URL that go nowhere, and someone who scans one is left
+        // waiting on a page that will never load.
         let strip_y = widgets::CONTENT_TOP;
-        let url = phone_url(cx);
-        // Encode once, then draw (N2).
-        let qr = crate::qr::Qr::encode(&url);
-        let qr_size = qr.as_ref().map(|q| q.size_px(3)).unwrap_or(0);
-        if let Some(q) = &qr {
-            q.draw(f, w - INSET_X - qr_size, strip_y, 3);
-        }
-        draw_label(f, INSET_X, strip_y + 18, "Type on your phone", false);
-        draw_text(f, quire_fonts::ui::mono(), INSET_X, strip_y + 44, &url, TextStyle::INK);
-        let field_y = strip_y + qr_size.max(64) + 12;
+        let reachable = matches!(cx.env.wifi(), crate::WifiState::Connected { .. } | crate::WifiState::Hotspot { .. });
+        let field_y = if reachable {
+            let url = phone_url(cx);
+            // Encode once, then draw (N2).
+            let qr = crate::qr::Qr::encode(&url);
+            let qr_size = qr.as_ref().map(|q| q.size_px(3)).unwrap_or(0);
+            if let Some(q) = &qr {
+                q.draw(f, w - INSET_X - qr_size, strip_y, 3);
+            }
+            draw_label(f, INSET_X, strip_y + 18, "Type on your phone", false);
+            draw_text(f, quire_fonts::ui::mono(), INSET_X, strip_y + 44, &url, TextStyle::INK);
+            strip_y + qr_size.max(64) + 12
+        } else {
+            strip_y
+        };
         text_field(f, Rect::new(INSET_X, field_y, (w - 2 * INSET_X) as u32, 48), &self.shown(), &self.hint, true);
         // Keys.
         let top = field_y + 64;
@@ -317,18 +325,29 @@ impl<E: Env> Screen<E> for KeyboardScreen {
                 Action::Redraw
             }
             Key::Confirm => self.activate(cx),
+            // The two side keys walk the keys in reading order rather than jumping a
+            // whole row at a time. Moving sideways otherwise needs a long press of the
+            // bottom keys, whose short press is already Shift and Done, so a reader
+            // pressing the only keys that plainly move the cursor could go q, a, z and
+            // no further along a row. Stepping one key at a time crosses the row ends
+            // by itself, so both directions reach every key.
             Key::Up => {
                 let (r, c) = self.focus;
-                let nr = if r == 0 { rows - 1 } else { r - 1 };
-                let len = self.row_len(nr).max(1);
-                self.focus = (nr, c.min(len - 1));
+                self.focus = if c > 0 {
+                    (r, c - 1)
+                } else {
+                    let nr = if r == 0 { rows - 1 } else { r - 1 };
+                    (nr, self.row_len(nr).max(1) - 1)
+                };
                 Action::Redraw
             }
             Key::Down => {
                 let (r, c) = self.focus;
-                let nr = (r + 1) % rows;
-                let len = self.row_len(nr).max(1);
-                self.focus = (nr, c.min(len - 1));
+                self.focus = if c + 1 < self.row_len(r).max(1) {
+                    (r, c + 1)
+                } else {
+                    ((r + 1) % rows, 0)
+                };
                 Action::Redraw
             }
             Key::Left | Key::Right => {

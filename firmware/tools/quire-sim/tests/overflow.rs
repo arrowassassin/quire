@@ -35,10 +35,9 @@ fn no_screen_draws_into_the_last_columns() {
     let h = quire_gfx::PANEL_H as i32;
     // The side labels' edge ticks sit at x = w-4..w-2 in the two side-key bands; the
     // frame's last two columns are never a legitimate place for ink on a page with margins.
-    let side_bands = [
-        (quire_ui::widgets::SIDE_UP_Y, quire_ui::widgets::SIDE_UP_Y + quire_ui::widgets::SIDE_H),
-        (quire_ui::widgets::SIDE_DOWN_Y, quire_ui::widgets::SIDE_DOWN_Y + quire_ui::widgets::SIDE_H),
-    ];
+    // Both side keys share one band now: they sit opposite each other rather than
+    // stacked down one edge.
+    let side_bands = [(quire_ui::widgets::SIDE_Y, quire_ui::widgets::SIDE_Y + quire_ui::widgets::SIDE_H)];
     let mut clipped = Vec::new();
     let mut edge_ink = Vec::new();
     for s in &shots {

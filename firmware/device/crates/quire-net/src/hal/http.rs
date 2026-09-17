@@ -689,6 +689,12 @@ impl PathRouterService for DropService {
                 Resp::Html(api::captive_html(&ip, &self.hostname))
             }
             Route::CaptiveProbe => Resp::Redirect(StatusCode::FOUND, alloc::format!("http://{}/captive", super::wifi::ap_ip_text())),
+            // iOS and macOS are told what they are hoping to hear, so that they
+            // stay on a network whose whole purpose is the reader at the other
+            // end of it. It is not true — there is no route past this device —
+            // and the cost is that neither will offer its sign-in sheet, so the
+            // Drop page has to be opened by hand or by scanning the code.
+            Route::AppleProbe => Resp::Html(String::from(routes::APPLE_SUCCESS)),
             Route::Status => self.status(),
             Route::Library => self.library(),
             Route::Stats => self.stats(),

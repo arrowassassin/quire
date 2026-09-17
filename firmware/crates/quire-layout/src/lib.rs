@@ -131,7 +131,9 @@ impl Default for Profile {
     fn default() -> Self {
         Profile {
             family: Family::Literata,
-            size: 26,
+            // 26 px reads small on the X3's panel; 28 is the next size with a
+            // real baked strike, so it costs nothing to render.
+            size: 28,
             line_height_pct: 145,
             margin: 32,
             align: Align::Justify,
@@ -139,7 +141,9 @@ impl Default for Profile {
             lang: Lang::English,
             para_style: ParaStyle::Indent,
             drop_caps: true,
-            darker: false,
+            // E-ink gives up contrast to the paper: a one-pixel dilation is the
+            // difference between grey text and black text on this panel.
+            darker: true,
             spine: true,
             running_head: true,
         }
@@ -332,7 +336,7 @@ mod tests {
         assert_eq!(g.text.y, 32 + RUNNING_HEAD_H as i32);
         // 528 - 2*32 margins - 12 spine - 10 gutter
         assert_eq!(g.text.w, 528 - 64 - SPINE_W - SPINE_GUTTER);
-        assert_eq!(g.line_h, 38); // 26 * 1.45
+        assert_eq!(g.line_h, 41); // 28 * 1.45, rounded
     }
 
     #[test]

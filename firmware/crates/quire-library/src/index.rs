@@ -315,7 +315,14 @@ impl Library {
     }
     /// Find by path.
     pub fn by_path(&self, path: &str) -> Option<&BookEntry> {
-        self.books.iter().find(|b| b.path == path)
+        // Case-insensitively, because the card is FAT32 and so is not case
+        // sensitive either. The default sources list both "/Books" and "/books"
+        // to cope with a card written either way; on the card itself those are
+        // one directory, so a scan walks it twice and the second pass would
+        // otherwise miss the entry it just made, re-hash the file, and rewrite
+        // the stored path to the other spelling — leaving every lookup by the
+        // path the card actually uses to fail.
+        self.books.iter().find(|b| b.path.eq_ignore_ascii_case(path))
     }
 
     /// Add or update an entry.

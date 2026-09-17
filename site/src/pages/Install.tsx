@@ -19,8 +19,8 @@ import {
   type Progress,
 } from '../lib/flash'
 import { md5Hex } from '../lib/md5'
-import { readFlashInto } from '../lib/readflash'
-import { downloadAsset, probeLatestRelease, type ReleaseProbe } from '../lib/release'
+import { readFlashInto, SERIAL_BUFFER_BYTES } from '../lib/readflash'
+import { probeLatestRelease, type ReleaseProbe } from '../lib/release'
 import { useSeo } from '../lib/useSeo'
 
 /* -------------------------------------------------------------------------
@@ -148,10 +148,17 @@ export function Install() {
   const [backupProgress, setBackupProgress] = useState<Progress | null>(null)
   const [backup, setBackup] = useState<{ file: string; sha: string | null } | null>(null)
   const [backupError, setBackupError] = useState('')
+  /** Set when someone says they already hold a backup, so step 2 can be passed. */
+  const [backupHeld, setBackupHeld] = useState(false)
+  /**
+   * Step 2 is satisfied either by a backup read here or by someone saying they
+   * already have one. Everything downstream asks this, never `backup` itself,
+   * so the two answers cannot drift apart.
+   */
+  const backupSettled = backup !== null || backupHeld
 
   const [release, setRelease] = useState<ReleaseProbe | null>(null)
   const [image, setImage] = useState<ChosenImage | null>(null)
-  const [imageProgress, setImageProgress] = useState<Progress | null>(null)
   const [imageError, setImageError] = useState('')
 
   const [confirmed, setConfirmed] = useState(false)
@@ -166,10 +173,10 @@ export function Install() {
 
   /* Ask GitHub whether a release exists, so step 3 never offers a button that
      cannot work. Today the answer is "none". This waits until the backup is
-     done and step 3 is actually in play: visiting the page should not fire a
+     settled and step 3 is actually in play: visiting the page should not fire a
      request at GitHub, and a 404 should not land in everyone's console. */
   useEffect(() => {
-    if (!supported || !backup || release !== null) return
+    if (!supported || !backupSettled || release !== null) return
     const ac = new AbortController()
     let live = true
     probeLatestRelease(ac.signal)
@@ -183,7 +190,7 @@ export function Install() {
       live = false
       ac.abort()
     }
-  }, [supported, backup, release])
+  }, [supported, backupSettled, release])
 
   const drop = useCallback(async () => {
     const transport = transportRef.current
@@ -221,7 +228,15 @@ export function Install() {
       // The second argument is Transport's `tracing` flag: it console.logs every
       // packet, which over a 16 MB read is tens of thousands of lines.
       transport = new SerialTransport(port, false)
-      const loader = new ESPLoader({ transport, baudrate: 921600 })
+      // Without serialOptions the port opens with Web Serial's 255-byte read
+      // buffer, far too small for the window the stub reads into; see
+      // SERIAL_BUFFER_BYTES. This is passed to every open the loader makes,
+      // including the one it redoes after changing the baud rate.
+      const loader = new ESPLoader({
+        transport,
+        baudrate: 921600,
+        serialOptions: { bufferSize: SERIAL_BUFFER_BYTES },
+      })
       const chip = await loader.main()
       const mac = await loader.chip.readMac(loader)
       const flashSize = await loader.detectFlashSize()
@@ -284,6 +299,7 @@ export function Install() {
         saveFile(`${name}.sha256`, new Blob([`${sha}  ${name}\n`], { type: 'text/plain' }))
       }
       setBackupProgress(null)
+      setBackupHeld(false)
       setBackup({ file: name, sha })
     } catch (err) {
       setBackupProgress(null)
@@ -329,28 +345,6 @@ export function Install() {
     [],
   )
 
-  const getFromRelease = useCallback(async () => {
-    if (!release || release.state !== 'available') return
-    setBusy('image')
-    setImageError('')
-    setImage(null)
-    setImageProgress({ done: 0, total: release.size || 1, eta: null })
-    const bump = tracker(setImageProgress)
-    try {
-      const data = await downloadAsset(release, bump)
-      const problem = imageProblem(data, release.asset)
-      if (problem) {
-        setImageError(problem)
-        return
-      }
-      setImage({ name: release.asset, data, source: `from release ${release.tag}` })
-    } catch (err) {
-      setImageError(reason(err))
-    } finally {
-      setImageProgress(null)
-      setBusy(null)
-    }
-  }, [release])
 
   const write = useCallback(
     async (what: ChosenImage, kind: 'install' | 'restore') => {
@@ -398,8 +392,8 @@ export function Install() {
 
   const working = busy !== null
   const connectState: StepState = device ? 'done' : 'ready'
-  const backupState: StepState = !device ? 'locked' : backup ? 'done' : 'ready'
-  const imageState: StepState = !backup ? 'locked' : image ? 'done' : 'ready'
+  const backupState: StepState = !device ? 'locked' : backupSettled ? 'done' : 'ready'
+  const imageState: StepState = !backupSettled ? 'locked' : image ? 'done' : 'ready'
   const installState: StepState = !image ? 'locked' : installed ? 'done' : 'ready'
 
   return (
@@ -557,6 +551,19 @@ export function Install() {
                         ? 'Try the backup again'
                         : 'Back up the stock firmware'}
                 </button>
+                {/* Someone on their second reader, or coming back to a half-finished
+                    install, already has the only file this step can produce. Reading
+                    it again costs them five minutes and tells them nothing new. */}
+                {!backupSettled ? (
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={() => setBackupHeld(true)}
+                    disabled={working || !device}
+                  >
+                    I already have one
+                  </button>
+                ) : null}
               </div>
 
               {backupProgress ? <Bar progress={backupProgress} label="Reading the flash" /> : null}
@@ -564,7 +571,9 @@ export function Install() {
               <p className="status" aria-live="polite">
                 {backup
                   ? `Saved ${backup.file} — ${bytes(FLASH_BYTES)} bytes, the exact size a whole-flash image has to be.`
-                  : busy === 'backup'
+                  : backupHeld
+                    ? 'Taken as read: you have a backup already.'
+                    : busy === 'backup'
                     ? 'Reading the flash. Do not detach the cable.'
                     : device
                       ? 'Nothing read yet.'
@@ -604,6 +613,26 @@ export function Install() {
                 </div>
               ) : null}
 
+              {backupHeld && !backup ? (
+                <div className="note">
+                  <p>
+                    Nothing has been read, so nothing here has been checked. Before you go on,
+                    make sure the file you are relying on is {bytes(FLASH_BYTES)} bytes and is
+                    somewhere other than this computer. <a href="#restore-title">Putting the stock
+                    firmware back</a> will ask for it.
+                  </p>
+                  <p>
+                    <button
+                      type="button"
+                      className="btn btn--ghost"
+                      onClick={() => setBackupHeld(false)}
+                    >
+                      Actually, read it now
+                    </button>
+                  </p>
+                </div>
+              ) : null}
+
               {backupError ? (
                 <div className="note note--bad" role="alert">
                   <p>{backupError}</p>
@@ -625,7 +654,7 @@ export function Install() {
                   <input
                     type="file"
                     accept=".bin,application/octet-stream"
-                    disabled={working || !backup}
+                    disabled={working || !backupSettled}
                     onChange={(e) => {
                       const file = e.target.files?.[0]
                       e.target.value = ''
@@ -636,24 +665,30 @@ export function Install() {
 
                 <div className="pick__release">
                   <span className="pick__label">Or straight from a release</span>
-                  {!backup ? (
-                    <p className="muted">Checked once your backup is saved.</p>
+                  {!backupSettled ? (
+                    <p className="muted">Checked once step 2 is settled.</p>
                   ) : release === null ? (
                     <p className="muted">Checking whether a release has been published…</p>
                   ) : release.state === 'available' ? (
                     <>
-                      <button
-                        type="button"
+                      {/* A plain download, not a fetch. GitHub serves release assets
+                          from release-assets.githubusercontent.com, which sends no
+                          access-control-allow-origin, so no page may read one however
+                          it asks. An ordinary download is not subject to that, and the
+                          file picker above takes it from there. */}
+                      <a
                         className="btn btn--ghost"
-                        onClick={() => void getFromRelease()}
-                        disabled={working || !backup}
+                        href={release.url}
+                        download={release.asset}
+                        rel="noreferrer"
                       >
                         <DownloadIcon />
-                        {busy === 'image' ? 'Downloading…' : `Download ${release.asset} (${release.tag})`}
-                      </button>
-                      {imageProgress ? (
-                        <Bar progress={imageProgress} label="Downloading the image" />
-                      ) : null}
+                        {`Download ${release.asset} (${release.tag})`}
+                      </a>
+                      <p className="muted">
+                        {megabytes(release.size)}. It goes to your downloads folder; then choose
+                        it with the file picker.
+                      </p>
                     </>
                   ) : (
                     <p className="muted">
@@ -667,7 +702,7 @@ export function Install() {
                 </div>
               </div>
 
-              {backup && release !== null && release.state !== 'available' ? (
+              {backupSettled && release !== null && release.state !== 'available' ? (
                 <div className="note">
                   <p>
                     Until a version is tagged, the newest build is the{' '}
@@ -694,7 +729,7 @@ export function Install() {
                   ? `${image.name} is ready — ${bytes(image.data.length)} bytes, ${image.source}.`
                   : busy === 'image'
                     ? 'Reading the file…'
-                    : backup
+                    : backupSettled
                       ? 'No image chosen yet.'
                       : 'Take the backup first.'}
               </p>
@@ -722,8 +757,9 @@ export function Install() {
                   onChange={(e) => setConfirmed(e.target.checked)}
                 />
                 <span>
-                  My backup from step 2 is saved, and I have a copy of it somewhere other than
-                  this computer.
+                  {backup
+                    ? 'My backup from step 2 is saved, and I have a copy of it somewhere other than this computer.'
+                    : 'I have a whole-flash backup of this reader, and a copy of it somewhere other than this computer.'}
                 </span>
               </label>
 
