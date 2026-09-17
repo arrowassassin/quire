@@ -7,6 +7,7 @@ use quire_gfx::{draw_text, Frame, Ink, Rect, TextStyle};
 use crate::spine::{self, SpineModel};
 use crate::text::{draw_label, line_h, wrap};
 use crate::theme::*;
+use crate::WifiState;
 use crate::widgets::{self, rail, running_head, setting_row, RowState, SettingValue};
 use crate::{Action, Ctx, Env, Key, KeyEvent, KeyKind, Refresh, Result_, Screen, SysRequest};
 
@@ -124,18 +125,26 @@ impl<E: Env> Screen<E> for FirstRun {
                     y += ROW_H;
                 }
                 y += 16;
-                let url = super::drop::drop_url(cx);
-                let code = crate::qr::Qr::encode(&url);
-                let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
-                if let Some(q) = &code {
-                    q.draw(f, widgets::INSET, y, 4);
-                }
-                draw_text(f, fb, widgets::INSET + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
+                // The address only exists while the reader is serving it. During first
+                // run the radio is still off, so printing one here — with a QR code to
+                // scan, no less — sends someone to a page that cannot answer. Drop
+                // turns the radio on and shows the address once there is one.
+                let reachable = matches!(cx.env.wifi(), WifiState::Connected { .. } | WifiState::Hotspot { .. });
+                let (hx, mut hy) = if reachable {
+                    let url = super::drop::drop_url(cx);
+                    let code = crate::qr::Qr::encode(&url);
+                    let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
+                    if let Some(q) = &code {
+                        q.draw(f, widgets::INSET, y, 4);
+                    }
+                    draw_text(f, fb, widgets::INSET + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
+                    (widgets::INSET + qr + 12, y + 30 + line_h(fb))
+                } else {
+                    (widgets::INSET, y)
+                };
                 // Beside a QR of unknown width, so this wraps into whatever is left
                 // rather than running off the edge.
-                let hx = widgets::INSET + qr + 12;
-                let mut hy = y + 30 + line_h(fb);
-                for l in wrap(fl, "Drop: press Up, then scan and drag books onto the page.", w - hx - widgets::INSET) {
+                for l in wrap(fl, "Drop: press Up for the address to open on your phone.", w - hx - widgets::INSET) {
                     draw_text(f, fl, hx, hy, &l, TextStyle::INK);
                     hy += line_h(fl);
                 }

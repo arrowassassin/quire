@@ -1,5 +1,5 @@
 01-boot 9c7c1222fa627365
-02-firstrun-books d432bebc67100ca4
+02-firstrun-books b95b1081a7b94710
 02-firstrun-language ad0bdb48970f0ca2
 02-firstrun-reader 86b37721400adc5d
 02-firstrun-time e3b92a47cc8e4fd5
@@ -41,7 +41,7 @@
 30-drop-full 97dafd702b2fab7b
 30-drop-hotspot b9adb44bf4d023dc
 31-wifi f508d54072f91669
-31-wifi-password 6cbc2765c3a3f917
+31-wifi-password b290f309fcb42320
 31-wifi-scan b9734c00f28ca3bd
 31-wifi-scanning 632a1545db1396b7
 32-opds 50c68935bd98942f
@@ -122,7 +122,7 @@
 78-calculator--3-78-calculator c9340da71d72fee2
 78-calculator--4-78-calculator e991df19bacedd6e
 79-notes 6e0604d4d0d1f666
-79-notes--1-14-keyboard 9aef32b43eeac115
+79-notes--1-14-keyboard 9a093e7243e8281e
 80-2048 9c4205696851305f
 80-2048--1-80-2048 872fc86c0f6f5fd9
 80-2048--2-80-2048 2a53b98a435fc465

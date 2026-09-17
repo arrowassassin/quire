@@ -174,18 +174,26 @@ impl<E: Env> Screen<E> for KeyboardScreen {
     fn draw(&mut self, cx: &mut Ctx<E>, f: &mut Frame) -> Refresh {
         let w = f.width() as i32;
         running_head(f, &self.title, None);
-        // Phone strip.
+        // Phone strip — only when a phone could actually reach the reader. The
+        // address is served by the reader itself, so with the radio off it is a
+        // QR code and a URL that go nowhere, and someone who scans one is left
+        // waiting on a page that will never load.
         let strip_y = widgets::CONTENT_TOP;
-        let url = phone_url(cx);
-        // Encode once, then draw (N2).
-        let qr = crate::qr::Qr::encode(&url);
-        let qr_size = qr.as_ref().map(|q| q.size_px(3)).unwrap_or(0);
-        if let Some(q) = &qr {
-            q.draw(f, w - INSET_X - qr_size, strip_y, 3);
-        }
-        draw_label(f, INSET_X, strip_y + 18, "Type on your phone", false);
-        draw_text(f, quire_fonts::ui::mono(), INSET_X, strip_y + 44, &url, TextStyle::INK);
-        let field_y = strip_y + qr_size.max(64) + 12;
+        let reachable = matches!(cx.env.wifi(), crate::WifiState::Connected { .. } | crate::WifiState::Hotspot { .. });
+        let field_y = if reachable {
+            let url = phone_url(cx);
+            // Encode once, then draw (N2).
+            let qr = crate::qr::Qr::encode(&url);
+            let qr_size = qr.as_ref().map(|q| q.size_px(3)).unwrap_or(0);
+            if let Some(q) = &qr {
+                q.draw(f, w - INSET_X - qr_size, strip_y, 3);
+            }
+            draw_label(f, INSET_X, strip_y + 18, "Type on your phone", false);
+            draw_text(f, quire_fonts::ui::mono(), INSET_X, strip_y + 44, &url, TextStyle::INK);
+            strip_y + qr_size.max(64) + 12
+        } else {
+            strip_y
+        };
         text_field(f, Rect::new(INSET_X, field_y, (w - 2 * INSET_X) as u32, 48), &self.shown(), &self.hint, true);
         // Keys.
         let top = field_y + 64;
