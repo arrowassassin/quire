@@ -310,7 +310,7 @@ pub fn draw_empty_home<E: Env>(cx: &mut Ctx<E>, f: &mut Frame) {
         y += line_h(fb);
     }
     y += 24;
-    draw_label(f, x, y + fl.ascent(), "Start here", false);
+    draw_label(f, x, y + fl.ascent(), "Free in the Bookshop", false);
     y += line_h(fl) + 8;
     // Title and author on the margin, the hours in mono against the rule's end.
     for (t, a, v) in super::bookshop::START_HERE.iter().take(3) {
@@ -325,13 +325,27 @@ pub fn draw_empty_home<E: Env>(cx: &mut Ctx<E>, f: &mut Frame) {
     y += 28;
     draw_label(f, x, y + fl.ascent(), "Or drop your own", false);
     y += line_h(fl) + 8;
-    let url = super::drop::drop_url(cx);
-    let code = crate::qr::Qr::encode(&url);
-    let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
-    if let Some(q) = &code {
-        q.draw(f, x, y, 4);
+    // The address exists only while the reader is serving it. Drop turns the
+    // radio on; until then there is no page for a QR code to point at.
+    if matches!(cx.env.wifi(), crate::WifiState::Connected { .. } | crate::WifiState::Hotspot { .. }) {
+        let url = super::drop::drop_url(cx);
+        let code = crate::qr::Qr::encode(&url);
+        let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
+        if let Some(q) = &code {
+            q.draw(f, x, y, 4);
+        }
+        draw_text(f, quire_fonts::ui::list_title(), x + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
+        draw_text(f, fl, x + qr + 12, y + 30 + line_h(fl) + 6, "Scan, then drag books onto the page.", TextStyle::INK);
+    } else {
+        for l in crate::text::wrap(fl, "Open Drop and the reader puts its own address here to scan.", cw) {
+            draw_text(f, fl, x, y + fl.ascent(), &l, TextStyle::INK);
+            y += line_h(fl);
+        }
     }
-    draw_text(f, quire_fonts::ui::list_title(), x + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
-    draw_text(f, fl, x + qr + 12, y + 30 + line_h(fl) + 6, "Scan, then drag books onto the page.", TextStyle::INK);
-    rail(f, ["Library", "Close", "Get", "Bookshop"], None);
+    // Drop and Stats are the side keys, which the rail has no cell for; without
+    // these the page offers Drop and names no way to reach it.
+    widgets::side_labels(f, Some("Drop"), Some("Stats"), true);
+    // Confirm opens the library, so that is what the cell says. It read "Get",
+    // which belongs to a book you are looking at in the Bookshop.
+    rail(f, ["Library", "Close", "Library", "Bookshop"], None);
 }
