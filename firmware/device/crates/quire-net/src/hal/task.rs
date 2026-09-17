@@ -180,6 +180,22 @@ async fn session(wifi: &mut WIFI<'static>, fs: &'static dyn CardFs, seed: u64, m
     log::info!("net: stack up, heap free {}", esp_alloc::HEAP.free());
     crate::touch(now_ms());
 
+    // Turn power saving off before serving. The station path sets it to Minimum
+    // and the setting survives into the access point's session, where nothing
+    // ever cleared it: the radio dozes while its own clients are waiting on it.
+    //
+    // Espressif's guide says modem sleep "works in station-only mode", which
+    // reads as though the setting is simply inert for an access point, and it
+    // does not describe any failure of this shape. CrossPoint, which serves the
+    // same page from the same chip, disables it anyway, and says why:
+    //
+    //     Disable WiFi sleep to improve responsiveness and prevent 'unreachable'
+    //     errors. This is critical for reliable web server operation on ESP32.
+    //
+    // That is the fault reported here — a client that joins, takes a DHCP lease
+    // and then cannot reach the reader at all.
+    wifi::power_save(&mut controller, false);
+
     let outcome = select(runner.run(), async {
         let http = http::serve(stack, fs, &hostname);
         match mode {
