@@ -1,5 +1,5 @@
 01-boot 9c7c1222fa627365
-02-firstrun-books 2c7323b869f7933e
+02-firstrun-books d432bebc67100ca4
 02-firstrun-language ad0bdb48970f0ca2
 02-firstrun-reader 86b37721400adc5d
 02-firstrun-time e3b92a47cc8e4fd5

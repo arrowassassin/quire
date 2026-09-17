@@ -110,14 +110,14 @@ impl<E: Env> Screen<E> for FirstRun {
                 let mut y = widgets::CONTENT_TOP;
                 for l in wrap(
                     fb,
-                    "A sample book is already on the reader. Get free books from the Bookshop, or drop your own from your phone.",
+                    "The card starts empty. Get free books from the Bookshop, or drop your own from your phone.",
                     w - 2 * widgets::INSET,
                 ) {
                     draw_text(f, fb, widgets::INSET, y + fb.ascent(), &l, TextStyle::INK);
                     y += line_h(fb);
                 }
                 y += 16;
-                draw_label(f, widgets::INSET, y + fl.ascent(), "Start here", false);
+                draw_label(f, widgets::INSET, y + fl.ascent(), "Free in the Bookshop", false);
                 y += line_h(fl) + 6;
                 for (t, a, h) in super::bookshop::START_HERE {
                     widgets::row(f, y, ROW_H, t, Some(a), Some(h), RowState::Normal);
