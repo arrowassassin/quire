@@ -91,10 +91,13 @@ pub fn rail(f: &mut Frame, labels: [&str; 4], focused: Option<usize>) {
     }
 }
 
-/// Vertical positions of the two side labels (beside the Up and Down keys).
-pub const SIDE_UP_Y: i32 = 500;
-/// Down label top.
-pub const SIDE_DOWN_Y: i32 = 592;
+/// Top of the band the two side labels sit in.
+///
+/// The keys are opposite each other on the upper half of the reader, one either
+/// side of the screen, so the labels share a height and differ only in which
+/// edge they are against. They used to be stacked low down on the right, which
+/// is where two right-hand keys would have been.
+pub const SIDE_Y: i32 = 220;
 /// Side label box height.
 pub const SIDE_H: i32 = 72;
 
@@ -102,10 +105,7 @@ pub const SIDE_H: i32 = 72;
 /// upwards, no box, with a 2 px tick on the very edge marking the key. `y` is the key's
 /// centre line. The compass and the power menu draw their side choices through this too,
 /// so the same physical key is always labelled at the same height in the same face.
-pub fn side_label(f: &mut Frame, y: i32, label: &str, inverted: bool) {
-    // `y` identifies the key, and the key decides the edge: Up is left of the
-    // screen, Down is right of it.
-    let left = y < (SIDE_UP_Y + SIDE_H / 2 + SIDE_DOWN_Y + SIDE_H / 2) / 2;
+pub fn side_label(f: &mut Frame, y: i32, label: &str, inverted: bool, left: bool) {
     let (rot, r) = side_label_plate(f, y, label, left);
     f.fill_rect(r, if inverted { Ink::Black } else { Ink::White });
     paint_side_label(f, &rot, r, y, inverted, left);
@@ -147,18 +147,14 @@ fn paint_side_label(f: &mut Frame, text: &str, r: Rect, key_y: i32, inverted: bo
 /// amount each, so neither runs into the other.
 pub fn side_labels(f: &mut Frame, up: Option<&str>, down: Option<&str>, boxed: bool) {
     let _ = boxed;
-    let (uy, dy) = (SIDE_UP_Y + SIDE_H / 2, SIDE_DOWN_Y + SIDE_H / 2);
-    // The X3 carries one side key either side of the screen, so the labels never
-    // share an edge and cannot run into one another.
+    // One key either side, at the same height: the labels face each other across
+    // the page and cannot run into one another.
+    let y = SIDE_Y + SIDE_H / 2;
     if let Some(u) = up {
-        let (t, r) = side_label_plate(f, uy, u, true);
-        f.fill_rect(r, Ink::White);
-        paint_side_label(f, &t, r, uy, false, true);
+        side_label(f, y, u, false, true);
     }
     if let Some(d) = down {
-        let (t, r) = side_label_plate(f, dy, d, false);
-        f.fill_rect(r, Ink::White);
-        paint_side_label(f, &t, r, dy, false, false);
+        side_label(f, y, d, false, false);
     }
 }
 
