@@ -48,9 +48,11 @@ pub enum Key {
     Confirm,
     /// Bottom, outer right.
     Right,
-    /// Right edge, upper.
+    /// The side key left of the display. Named for what it does to a list or a
+    /// page, not for where it sits: the X3 carries one key either side of the
+    /// screen rather than two stacked on the right, whatever 02-hardware.md says.
     Up,
-    /// Right edge, lower.
+    /// The side key right of the display.
     Down,
     /// Top.
     Power,
