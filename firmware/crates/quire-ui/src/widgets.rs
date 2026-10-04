@@ -862,3 +862,34 @@ pub fn heat_fill(f: &mut Frame, r: Rect, fraction: u8) {
         _ => f.fill_rect(r, Ink::Black),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A side label has to sit wholly on the page, against the edge its key is on. The
+    /// overflow test cannot judge this from pixels — the plates are punched into a
+    /// screened page and the ticks run into its dots — so it is asserted here from the
+    /// geometry, for every label the screens use and for one too long to fit.
+    #[test]
+    fn side_label_plates_stay_on_the_page() {
+        let f = Frame::new(quire_gfx::PANEL_W, quire_gfx::PANEL_H);
+        let w = f.width() as i32;
+        let h = f.height() as i32;
+        let y = SIDE_Y + SIDE_H / 2;
+        for label in ["Drop", "Stats", "Type", "More", "Note", "Delete", "Rhythm", "Calendar", "Wiki", "Dict", "a label far too long to fit"] {
+            for left in [true, false] {
+                let (_, r) = side_label_plate(&f, y, label, left);
+                assert!(r.x >= 2, "{label:?} on the {} edge starts off the page at x={}", if left { "left" } else { "right" }, r.x);
+                assert!(r.x + r.w as i32 <= w - 2, "{label:?} on the {} edge runs off the page", if left { "left" } else { "right" });
+                assert!(r.y >= 0 && r.y + r.h as i32 <= h, "{label:?} runs off the top or bottom");
+                // And against its own edge: the left plate in the left half, the right in the right.
+                if left {
+                    assert!(r.x + (r.w as i32) < w / 2, "{label:?} meant for the left edge is not on it");
+                } else {
+                    assert!(r.x > w / 2, "{label:?} meant for the right edge is not on it");
+                }
+            }
+        }
+    }
+}
