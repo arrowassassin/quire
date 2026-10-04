@@ -180,10 +180,32 @@ pub fn sanitize_path(p: &str) -> Option<String> {
         out.push('/');
         out.push_str(s);
     }
-    if out == "/.quire" || out.starts_with("/.quire/") {
+    if names_the_cache(segs[0]) && (segs.len() > 1 || p.starts_with('/')) {
         return None;
     }
     Some(out)
+}
+
+/// Does a top-level path segment reach `/.quire`, the reader's private directory?
+///
+/// It holds wifi.bin — every saved Wi-Fi password, the Drop PIN and the hotspot's
+/// own password — and settings.bin, and downloads are not PIN-gated, so this check is
+/// the only thing standing between those and anyone who has joined the hotspot.
+///
+/// The card is FAT, and the driver finds an entry case-insensitively by either its
+/// long name or its generated 8.3 short name. A literal comparison with "/.quire"
+/// therefore stops nothing: ".QUIRE" reaches the same directory, and so does its short
+/// alias, which is the basis "QUIRE" with a numeric tail ("QUIRE~1", or "~2" and up if
+/// those were taken). Both spellings are refused.
+fn names_the_cache(seg: &str) -> bool {
+    if seg.eq_ignore_ascii_case(".quire") {
+        return true;
+    }
+    let upper = seg.to_ascii_uppercase();
+    match upper.strip_prefix("QUIRE~") {
+        Some(tail) => !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
 }
 
 /// The value of `name` in a query string, percent-decoded.
@@ -248,6 +270,45 @@ mod tests {
         assert_eq!(sanitize_path("Books/../x"), None);
         assert_eq!(sanitize_path("Books/bad:name"), None);
         assert_eq!(sanitize_path("Books/trail."), None);
+    }
+
+    /// The private directory holds every saved Wi-Fi password, the Drop PIN and the
+    /// hotspot password. FAT finds it by any casing of its name and by its 8.3 alias,
+    /// so every one of those spellings has to be refused, not just the lowercase one.
+    #[test]
+    fn the_private_directory_is_unreachable_by_any_spelling() {
+        for path in [
+            "/.quire/wifi.bin",
+            ".quire/wifi.bin",
+            "/.QUIRE/wifi.bin",
+            ".QUIRE/wifi.bin",
+            ".Quire/settings.bin",
+            "/.qUiRe",
+            "QUIRE~1/wifi.bin",
+            "/quire~1/wifi.bin",
+            "Quire~2/settings.bin",
+            "QUIRE~10/wifi.bin",
+        ] {
+            assert_eq!(sanitize_path(path), None, "{path:?} reached the private directory");
+        }
+        // And the same requests through the router, as a phone would send them.
+        assert_eq!(route("GET", "/api/files/.QUIRE/wifi.bin"), Route::NotFound);
+        assert_eq!(route("GET", "/api/files/QUIRE~1/wifi.bin"), Route::NotFound);
+        assert_eq!(route("PUT", "/api/files/.Quire/settings.bin"), Route::NotFound);
+        assert_eq!(route("DELETE", "/api/files/quire~1/wifi.bin"), Route::NotFound);
+    }
+
+    /// Only the top-level private directory is refused: names that merely resemble it,
+    /// further down or as a plain file, are ordinary books.
+    #[test]
+    fn lookalike_names_elsewhere_are_still_allowed() {
+        assert_eq!(sanitize_path("/Books/QUIRE~1.EPU").as_deref(), Some("/Books/QUIRE~1.EPU"));
+        assert_eq!(sanitize_path("/Books/.quire").as_deref(), Some("/Books/.quire"));
+        assert_eq!(sanitize_path("/Books/quire/notes.txt").as_deref(), Some("/Books/quire/notes.txt"));
+        assert_eq!(sanitize_path("/quire/a.epub").as_deref(), Some("/quire/a.epub"));
+        assert_eq!(sanitize_path("/QUIRE~/a.epub").as_deref(), Some("/QUIRE~/a.epub"));
+        // A bare name lands in /Books, so even ".quire" on its own is just a file there.
+        assert_eq!(sanitize_path(".quire").as_deref(), Some("/Books/.quire"));
         assert_eq!(sanitize_path("Books/nl\nx"), None);
         assert_eq!(sanitize_path(""), None);
         assert_eq!(sanitize_path("/.quire/x"), None);
