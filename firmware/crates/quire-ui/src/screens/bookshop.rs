@@ -154,6 +154,9 @@ const MAGIC: &[u8; 4] = b"QCAT";
 const HEADER: usize = 64;
 const REC: usize = 160;
 const SHELVES: usize = 6;
+/// The last focusable column on a shelf: three covers, then the tile that opens the
+/// rest of it.
+const SHELF_LAST: usize = 3;
 const SHELF_LEN: usize = 12;
 /// Books a search returns at most.
 const SEARCH_LIMIT: usize = 200;
@@ -760,6 +763,49 @@ fn shop_cover(f: &mut Frame, x: i32, y: i32, title: &str, author: &str, focused:
     f.stroke_rect(r, if focused { 4 } else { 1 }, Ink::Black);
 }
 
+impl BookshopHome {
+    /// The columns the cursor can rest on along shelf `row` (1-based): each cover the
+    /// shelf actually has, then the tile that opens the rest of it. A column past the
+    /// last cover draws nothing, so it is never a place.
+    fn places(&self, row: usize) -> alloc::vec::Vec<usize> {
+        let covers = self.shelves.get(row.wrapping_sub(1)).map(|r| r.len().min(SHELF_LAST)).unwrap_or(0);
+        (0..covers).chain(core::iter::once(SHELF_LAST)).collect()
+    }
+
+    /// One step in reading order, `dir` = 1 forward or -1 back: along a shelf, then on
+    /// to the next, with the search row before the first shelf.
+    fn step(&self, dir: i32) -> (usize, usize) {
+        let (row, col) = self.focus;
+        if dir > 0 {
+            if row == 0 {
+                return (1, self.places(1)[0]);
+            }
+            let places = self.places(row);
+            let at = places.iter().position(|c| *c == col).unwrap_or(0);
+            if at + 1 < places.len() {
+                (row, places[at + 1])
+            } else if row < SHELVES {
+                (row + 1, self.places(row + 1)[0])
+            } else {
+                (row, col)
+            }
+        } else {
+            if row == 0 {
+                return (0, 0);
+            }
+            let places = self.places(row);
+            let at = places.iter().position(|c| *c == col).unwrap_or(0);
+            if at > 0 {
+                (row, places[at - 1])
+            } else if row > 1 {
+                (row - 1, *self.places(row - 1).last().unwrap_or(&SHELF_LAST))
+            } else {
+                (0, 0)
+            }
+        }
+    }
+}
+
 impl<E: Env> Screen<E> for BookshopHome {
     fn name(&self) -> &'static str {
         "35-bookshop"
@@ -834,22 +880,33 @@ impl<E: Env> Screen<E> for BookshopHome {
             Key::Back => Action::Pop,
             Key::Left if self.focus.0 == 0 => Action::Push(Box::new(Browse::new())),
             Key::Right if self.focus.0 == 0 => Action::Push(Box::new(Search::new())),
+            // The side keys sit left and right of the screen, and step through the
+            // shelves in reading order: along a shelf, then on to the next one. They
+            // used to jump a whole shelf at a time, which left moving along a shelf to
+            // the bottom keys alone — and on the search row, where focus starts, those
+            // open Browse and Search instead, so the keys that plainly move went
+            // down and down and never along.
             Key::Up => {
-                self.focus.0 = self.focus.0.saturating_sub(1);
+                self.focus = self.step(-1);
                 Action::Redraw
             }
             Key::Down => {
-                self.focus.0 = (self.focus.0 + 1).min(SHELVES);
+                self.focus = self.step(1);
                 Action::Redraw
             }
-            Key::Left => {
-                self.focus.1 = self.focus.1.saturating_sub(1);
+            // The bottom keys move along the shelf the cursor is on, between the places
+            // that are there; they used to stop on columns past a shelf's last cover,
+            // where nothing is drawn, so the cursor simply disappeared.
+            Key::Left | Key::Right if self.focus.0 > 0 => {
+                let row = self.focus.0;
+                let places = self.places(row);
+                let at = places.iter().position(|c| *c == self.focus.1).unwrap_or(0);
+                let to = if ev.key == Key::Left { at.saturating_sub(1) } else { (at + 1).min(places.len() - 1) };
+                self.focus.1 = places[to];
                 Action::Redraw
             }
-            Key::Right => {
-                self.focus.1 = (self.focus.1 + 1).min(3);
-                Action::Redraw
-            }
+            // On the search row Left and Right open Browse and Search, above.
+            Key::Left | Key::Right => Action::None,
             Key::Confirm => {
                 if self.focus.0 == 0 {
                     return Action::Push(Box::new(Search::new()));
