@@ -3,21 +3,42 @@
 
 use quire_sim::{fixture_card, tour, Sim};
 
-/// Rows with ink in the last two columns whose ink run ending at the edge is short and
+/// Rows with ink in the two columns at one edge (`left`, else right) whose ink run ending at the edge is short and
 /// whose row is not mostly ink — glyph-sized, so not a rule, a focused row's inversion or
 /// a card frame. Rows in `skip` (the side-label ticks) are ignored.
-fn clipped_rows(f: &quire_gfx::Frame, skip: &[(i32, i32)]) -> Vec<i32> {
+fn clipped_rows(f: &quire_gfx::Frame, skip: &[(i32, i32)], left: bool) -> Vec<i32> {
     let w = f.width() as i32;
     let mut rows = Vec::new();
     for y in 0..f.height() as i32 {
         if skip.iter().any(|(a, b)| y >= *a && y < *b) {
             continue;
         }
-        if !(w - 2..w).any(|x| f.get(x, y)) {
+        let edge = if left { 0..2 } else { w - 2..w };
+        if !edge.clone().any(|x| f.get(x, y)) {
             continue;
         }
-        let run = (0..w).rev().take_while(|x| f.get(*x, y)).count();
+        // The ink run that touches this edge, walking inwards from it.
+        let run = if left {
+            (0..w).take_while(|x| f.get(*x, y)).count()
+        } else {
+            (0..w).rev().take_while(|x| f.get(*x, y)).count()
+        };
         let ink = (0..w).filter(|x| f.get(*x, y)).count();
+        // A shaded band is a dot screen — evenly spaced single pixels — and reaches
+        // whichever edge its phase happens to land on; text set over the band breaks
+        // the pattern further in, so only the strip beside the edge is judged. A glyph
+        // cut off at the edge is never that regular.
+        // Ten pixels: the gap between the edge and where a side label's plate may
+        // begin, so a plate punched into a screened page does not break the pattern.
+        let strip: Vec<i32> = if left {
+            (0..10).filter(|x| f.get(*x, y)).collect()
+        } else {
+            (w - 10..w).filter(|x| f.get(*x, y)).collect()
+        };
+        let period = if strip.len() >= 3 { strip[1] - strip[0] } else { 0 };
+        if period >= 2 && strip.windows(2).all(|p| p[1] - p[0] == period) {
+            continue;
+        }
         // A focused row is inverted: its white value text ends short of the edge.
         if run < 24 && ink < w as usize / 2 {
             rows.push(y);
@@ -35,10 +56,11 @@ fn no_screen_draws_into_the_last_columns() {
     let h = quire_gfx::PANEL_H as i32;
     // The side labels' edge ticks sit at x = w-4..w-2 in the two side-key bands; the
     // frame's last two columns are never a legitimate place for ink on a page with margins.
-    let side_bands = [
-        (quire_ui::widgets::SIDE_UP_Y, quire_ui::widgets::SIDE_UP_Y + quire_ui::widgets::SIDE_H),
-        (quire_ui::widgets::SIDE_DOWN_Y, quire_ui::widgets::SIDE_DOWN_Y + quire_ui::widgets::SIDE_H),
-    ];
+    // The side-label rows are excused: there a plate is punched into a screened page
+    // and its tick runs into the dots beside it, which no pixel rule reads cleanly.
+    // Whether a label stays on the page is asserted from its geometry instead
+    // (widgets::tests::side_label_plates_stay_on_the_page).
+    let side_bands = [(quire_ui::widgets::SIDE_Y, quire_ui::widgets::SIDE_Y + quire_ui::widgets::SIDE_H)];
     let mut clipped = Vec::new();
     let mut edge_ink = Vec::new();
     for s in &shots {
@@ -51,7 +73,13 @@ fn no_screen_draws_into_the_last_columns() {
         if full_bleed {
             continue;
         }
-        let right = clipped_rows(&s.frame, &side_bands);
+        // Side labels sit against both edges now — one key either side of the
+        // screen — so a label pushed off the page can happen on either side.
+        let right = clipped_rows(&s.frame, &side_bands, false);
+        let left = clipped_rows(&s.frame, &side_bands, true);
+        if !left.is_empty() {
+            edge_ink.push(format!("{}: glyph ink at the left edge on rows {left:?}", s.name));
+        }
         // The rail's three cell dividers run to the bottom row; anything else there is
         // text that overran the rail (a rule spanning the width is a card frame, not text).
         let cell = w / 4;

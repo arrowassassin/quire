@@ -161,13 +161,25 @@ fn changed(i: &mut Inner) {
     i.downloads_gen = i.downloads_gen.wrapping_add(1);
 }
 
+/// Make room for one more entry once the list is full.
+///
+/// The oldest entry that has finished — done or failed — goes. Only when every entry
+/// is still in progress (queued, running, or waiting out a retry) does the oldest go
+/// regardless. Uploads used to drop index 0 unconditionally, and that could be a
+/// transfer still running: its bytes kept arriving on the card, but its progress and
+/// its result toast, both looked up by title, quietly stopped having anywhere to go.
+fn make_room(i: &mut Inner) {
+    if i.downloads.len() >= MAX_DOWNLOADS {
+        let finished = i.downloads.iter().position(|d| matches!(d.state, DownloadState::Done | DownloadState::Failed(_)));
+        i.downloads.remove(finished.unwrap_or(0));
+    }
+}
+
 /// An upload (or download) began.
 pub fn transfer_started(title: &str, url: &str, total: Option<u64>, done: u64) {
     with(|i| {
         i.downloads.retain(|d| d.title != title);
-        if i.downloads.len() >= MAX_DOWNLOADS {
-            i.downloads.remove(0);
-        }
+        make_room(i);
         i.downloads.push(Download {
             title: String::from(title),
             author: String::new(),
@@ -216,10 +228,7 @@ pub fn download_queued(title: &str, author: &str, url: &str, total: Option<u64>)
             return;
         }
         i.downloads.retain(|d| d.url != url);
-        if i.downloads.len() >= MAX_DOWNLOADS {
-            let done = i.downloads.iter().position(|d| !matches!(d.state, DownloadState::Queued | DownloadState::Working));
-            i.downloads.remove(done.unwrap_or(0));
-        }
+        make_room(i);
         i.downloads.push(Download {
             title: String::from(title),
             author: String::from(author),
@@ -252,9 +261,9 @@ pub fn download_state(title: &str, state: DownloadState) {
 
 /// Cancel the download at `index` in the list: a queued one is dropped, the running
 /// one is asked to stop (its loop checks [`cancelled`]).
-pub fn cancel_download(index: usize) {
+pub fn cancel_download(url: &str) {
     with(|i| {
-        let Some(d) = i.downloads.get_mut(index) else { return };
+        let Some(d) = i.downloads.iter_mut().find(|d| d.url == url) else { return };
         match d.state {
             DownloadState::Queued | DownloadState::Retrying(_) => d.state = DownloadState::Failed(String::from("cancelled")),
             DownloadState::Working => i.cancel = Some(d.title.clone()),
@@ -277,9 +286,9 @@ pub fn cancelled(title: &str) -> bool {
 }
 
 /// Queue the failed download at `index` again. Returns whether there was one.
-pub fn retry_download(index: usize) -> bool {
+pub fn retry_download(url: &str) -> bool {
     with(|i| {
-        let Some(d) = i.downloads.get_mut(index) else { return false };
+        let Some(d) = i.downloads.iter_mut().find(|d| d.url == url) else { return false };
         if matches!(d.state, DownloadState::Failed(_)) {
             d.state = DownloadState::Queued;
             d.done = 0;
@@ -355,8 +364,30 @@ impl NetState for NetShared {
 mod tests {
     use super::*;
 
+    /// These tests share the one global `Inner`, and the harness runs them in
+    /// parallel; one clearing or filling the download list under another made them
+    /// fail now and then. Each takes this for its whole run. It is released in `Drop`,
+    /// so a test that fails does not hold up the rest.
+    static SERIAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    struct Serial;
+    impl Serial {
+        fn take() -> Self {
+            use core::sync::atomic::Ordering::{Acquire, Relaxed};
+            while SERIAL.compare_exchange(false, true, Acquire, Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+            Serial
+        }
+    }
+    impl Drop for Serial {
+        fn drop(&mut self) {
+            SERIAL.store(false, core::sync::atomic::Ordering::Release);
+        }
+    }
+
     #[test]
     fn transfers_and_handle() {
+        let _serial = Serial::take();
         let mut h = NetShared::new();
         h.refresh();
         let base = h.downloads().len();
@@ -380,24 +411,66 @@ mod tests {
 
     #[test]
     fn queue_cancel_retry() {
+        let _serial = Serial::take();
         download_queued("Walden", "Thoreau", "https://x/w.epub", Some(5));
         download_queued("Walden", "Thoreau", "https://x/w.epub", Some(5));
         let (t, _, u, _) = next_queued().unwrap();
         assert_eq!((t.as_str(), u.as_str()), ("Walden", "https://x/w.epub"));
-        let idx = with(|i| i.downloads.iter().position(|d| d.title == "Walden").unwrap());
-        cancel_download(idx);
-        assert!(with(|i| matches!(i.downloads[idx].state, DownloadState::Failed(_))));
-        assert!(retry_download(idx));
+        let walden = |i: &Inner| i.downloads.iter().find(|d| d.title == "Walden").map(|d| d.state.clone());
+        cancel_download("https://x/w.epub");
+        assert!(matches!(with(|i| walden(i)), Some(DownloadState::Failed(_))));
+        assert!(retry_download("https://x/w.epub"));
         download_state("Walden", DownloadState::Working);
-        cancel_download(idx);
+        cancel_download("https://x/w.epub");
         assert!(cancelled("Walden"));
         assert!(!cancelled("Walden"));
         transfer_finished("Walden", Err(String::from("cancelled")));
         with(|i| i.downloads.retain(|d| d.title != "Walden"));
     }
 
+    /// The screen picks a row from its copy of the list, but the list it is acted on
+    /// can have moved by then: a transfer starting goes to the end. A cancel has to
+    /// land on the download that was chosen, not on whatever now sits where it was.
+    #[test]
+    fn cancel_lands_on_the_chosen_download_after_the_list_moves() {
+        let _serial = Serial::take();
+        download_queued("First", "", "https://x/first.epub", None);
+        download_queued("Second", "", "https://x/second.epub", None);
+        // The reader chose "First" while it sat ahead of "Second"…
+        let chosen = String::from("https://x/first.epub");
+        // …then an upload started, and "First" was re-added at the end.
+        transfer_started("First", "https://x/first.epub", None, 0);
+        cancel_download(&chosen);
+        let state = |t: &str| with(|i| i.downloads.iter().find(|d| d.title == t).map(|d| d.state.clone()));
+        // "First" was running, so its cancel is flagged rather than recorded as failed…
+        assert!(cancelled("First"));
+        // …and "Second", which now sits where "First" used to, is untouched.
+        assert_eq!(state("Second"), Some(DownloadState::Queued));
+        with(|i| i.downloads.retain(|d| d.title != "First" && d.title != "Second"));
+    }
+
+    /// When the list is full, a new entry pushes out one that has finished — never one
+    /// still running, which would lose its progress and its result.
+    #[test]
+    fn a_full_list_drops_a_finished_entry_not_a_running_one() {
+        let _serial = Serial::take();
+        with(|i| i.downloads.clear());
+        transfer_started("running", "/Books/running.epub", Some(100), 0);
+        for n in 0..MAX_DOWNLOADS - 1 {
+            let t = alloc::format!("done{n}");
+            transfer_started(&t, "", None, 0);
+            transfer_finished(&t, Ok(()));
+        }
+        assert_eq!(with(|i| i.downloads.len()), MAX_DOWNLOADS);
+        transfer_started("newcomer", "", None, 0);
+        assert!(with(|i| i.downloads.iter().any(|d| d.title == "running")), "a running transfer was evicted");
+        assert!(with(|i| i.downloads.iter().any(|d| d.title == "newcomer")));
+        with(|i| i.downloads.clear());
+    }
+
     #[test]
     fn mirror() {
+        let _serial = Serial::take();
         assert!(!mirror_wanted());
         let bits = alloc::vec![0u8; 66 * 792];
         publish_mirror(&bits, 528, 792);

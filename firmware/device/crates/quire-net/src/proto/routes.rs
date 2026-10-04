@@ -11,6 +11,8 @@ pub enum Route {
     Captive,
     /// An OS captive-portal probe: redirect to `/captive`.
     CaptiveProbe,
+    /// Apple's reachability probe, answered with the success page it wants.
+    AppleProbe,
     /// PWA manifest.
     Manifest,
     /// Service worker.
@@ -71,8 +73,6 @@ impl Route {
 const PROBES: &[&str] = &[
     "/generate_204",
     "/gen_204",
-    "/hotspot-detect.html",
-    "/library/test/success.html",
     "/connecttest.txt",
     "/ncsi.txt",
     "/redirect",
@@ -81,6 +81,18 @@ const PROBES: &[&str] = &[
     "/check_network_status.txt",
     "/mobile/status.php",
 ];
+
+/// The paths iOS and macOS probe, answered with the page they are looking for.
+///
+/// Anything else — a redirect to the portal, which is what the other probes get
+/// — tells them the network is behind a sign-in, and once that sheet is closed
+/// they treat a network with no route to the internet as a bad one and leave for
+/// a better one, mid-transfer. The reader is the whole point of this network, so
+/// it says what keeps them on it.
+const APPLE_PROBES: &[&str] = &["/hotspot-detect.html", "/library/test/success.html"];
+
+/// What macOS and iOS expect from their probe, byte for byte.
+pub const APPLE_SUCCESS: &str = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
 
 /// Route `method` + `path` (the path as sent, percent-encoded, without the query).
 pub fn route(method: &str, path: &str) -> Route {
@@ -130,6 +142,9 @@ pub fn route(method: &str, path: &str) -> Route {
             _ => Route::MethodNotAllowed,
         };
     }
+    if APPLE_PROBES.contains(&path) {
+        return if get { Route::AppleProbe } else { Route::MethodNotAllowed };
+    }
     if PROBES.contains(&path) {
         return Route::CaptiveProbe;
     }
@@ -165,10 +180,32 @@ pub fn sanitize_path(p: &str) -> Option<String> {
         out.push('/');
         out.push_str(s);
     }
-    if out == "/.quire" || out.starts_with("/.quire/") {
+    if names_the_cache(segs[0]) && (segs.len() > 1 || p.starts_with('/')) {
         return None;
     }
     Some(out)
+}
+
+/// Does a top-level path segment reach `/.quire`, the reader's private directory?
+///
+/// It holds wifi.bin — every saved Wi-Fi password, the Drop PIN and the hotspot's
+/// own password — and settings.bin, and downloads are not PIN-gated, so this check is
+/// the only thing standing between those and anyone who has joined the hotspot.
+///
+/// The card is FAT, and the driver finds an entry case-insensitively by either its
+/// long name or its generated 8.3 short name. A literal comparison with "/.quire"
+/// therefore stops nothing: ".QUIRE" reaches the same directory, and so does its short
+/// alias, which is the basis "QUIRE" with a numeric tail ("QUIRE~1", or "~2" and up if
+/// those were taken). Both spellings are refused.
+fn names_the_cache(seg: &str) -> bool {
+    if seg.eq_ignore_ascii_case(".quire") {
+        return true;
+    }
+    let upper = seg.to_ascii_uppercase();
+    match upper.strip_prefix("QUIRE~") {
+        Some(tail) => !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
 }
 
 /// The value of `name` in a query string, percent-decoded.
@@ -198,7 +235,14 @@ mod tests {
         assert_eq!(route("POST", "/upload"), Route::Upload);
         assert_eq!(route("GET", "/upload"), Route::MethodNotAllowed);
         assert_eq!(route("GET", "/generate_204"), Route::CaptiveProbe);
-        assert_eq!(route("GET", "/hotspot-detect.html"), Route::CaptiveProbe);
+        // Apple's two probes are answered rather than redirected, so that iOS and
+        // macOS stay on a network that has nothing beyond the reader.
+        assert_eq!(route("GET", "/hotspot-detect.html"), Route::AppleProbe);
+        assert_eq!(route("GET", "/library/test/success.html"), Route::AppleProbe);
+        assert_eq!(route("POST", "/hotspot-detect.html"), Route::MethodNotAllowed);
+        // Byte for byte what they look for: anything else reads as a portal.
+        assert!(APPLE_SUCCESS.contains("<TITLE>Success</TITLE>"));
+        assert!(APPLE_SUCCESS.contains("<BODY>Success</BODY>"));
         assert_eq!(route("GET", "/nothing"), Route::NotFound);
         assert_eq!(route("POST", "/api/fetch"), Route::Fetch);
     }
@@ -226,6 +270,45 @@ mod tests {
         assert_eq!(sanitize_path("Books/../x"), None);
         assert_eq!(sanitize_path("Books/bad:name"), None);
         assert_eq!(sanitize_path("Books/trail."), None);
+    }
+
+    /// The private directory holds every saved Wi-Fi password, the Drop PIN and the
+    /// hotspot password. FAT finds it by any casing of its name and by its 8.3 alias,
+    /// so every one of those spellings has to be refused, not just the lowercase one.
+    #[test]
+    fn the_private_directory_is_unreachable_by_any_spelling() {
+        for path in [
+            "/.quire/wifi.bin",
+            ".quire/wifi.bin",
+            "/.QUIRE/wifi.bin",
+            ".QUIRE/wifi.bin",
+            ".Quire/settings.bin",
+            "/.qUiRe",
+            "QUIRE~1/wifi.bin",
+            "/quire~1/wifi.bin",
+            "Quire~2/settings.bin",
+            "QUIRE~10/wifi.bin",
+        ] {
+            assert_eq!(sanitize_path(path), None, "{path:?} reached the private directory");
+        }
+        // And the same requests through the router, as a phone would send them.
+        assert_eq!(route("GET", "/api/files/.QUIRE/wifi.bin"), Route::NotFound);
+        assert_eq!(route("GET", "/api/files/QUIRE~1/wifi.bin"), Route::NotFound);
+        assert_eq!(route("PUT", "/api/files/.Quire/settings.bin"), Route::NotFound);
+        assert_eq!(route("DELETE", "/api/files/quire~1/wifi.bin"), Route::NotFound);
+    }
+
+    /// Only the top-level private directory is refused: names that merely resemble it,
+    /// further down or as a plain file, are ordinary books.
+    #[test]
+    fn lookalike_names_elsewhere_are_still_allowed() {
+        assert_eq!(sanitize_path("/Books/QUIRE~1.EPU").as_deref(), Some("/Books/QUIRE~1.EPU"));
+        assert_eq!(sanitize_path("/Books/.quire").as_deref(), Some("/Books/.quire"));
+        assert_eq!(sanitize_path("/Books/quire/notes.txt").as_deref(), Some("/Books/quire/notes.txt"));
+        assert_eq!(sanitize_path("/quire/a.epub").as_deref(), Some("/quire/a.epub"));
+        assert_eq!(sanitize_path("/QUIRE~/a.epub").as_deref(), Some("/QUIRE~/a.epub"));
+        // A bare name lands in /Books, so even ".quire" on its own is just a file there.
+        assert_eq!(sanitize_path(".quire").as_deref(), Some("/Books/.quire"));
         assert_eq!(sanitize_path("Books/nl\nx"), None);
         assert_eq!(sanitize_path(""), None);
         assert_eq!(sanitize_path("/.quire/x"), None);

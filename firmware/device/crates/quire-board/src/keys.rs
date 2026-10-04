@@ -1,18 +1,42 @@
-//! The seven keys: two ADC resistor ladders (GPIO1: Back/Confirm/Left/Right, GPIO2:
-//! Up/Down) plus the Power GPIO, decoded into `quire_ui::KeyEvent`s with debouncing,
-//! long-press, repeat and release timing (brief §2). Pure logic: the HAL feeds samples.
+//! The seven keys: two ADC resistor ladders (GPIO1: the four keys along the bottom,
+//! GPIO2: the key either side of the display) plus the Power GPIO, decoded into
+//! `quire_ui::KeyEvent`s with debouncing, long-press, repeat and release timing
+//! (brief §2). Pure logic: the HAL feeds samples.
 
 pub use quire_ui::{Key, KeyEvent, KeyKind};
 
-/// Ladder levels in millivolts (02-hardware.md §3); the ladders idle near full scale.
+/// Ladder levels in millivolts, measured on an X3 through the ESP32-C3's own ADC.
+///
+/// The figures in 02-hardware.md §3 came from an X4 and its vendor firmware, and that
+/// survey says as much: "shared with X4 ... physical-key→ladder mapping on X3
+/// unconfirmed". They are not this device's. They also assume a ladder that idles near
+/// 3850 mV, which the C3's ADC cannot report at all: at 11 dB it saturates around 3050,
+/// so an idle rail and any key above that ceiling read as the same number. Taken
+/// together the old figures put idle 358 mV from Confirm, so the reader sat with Confirm
+/// apparently held down for ever — redrawing constantly, and swallowing the keys that
+/// were really pressed.
+///
+/// Measured here, idle is 3052 on both ladders (the ADC ceiling) and every key pulls
+/// its ladder down from there.
 pub mod levels {
-    /// Group 1 levels: (key, mV).
+    /// Group 1, the four keys along the bottom, outer left to outer right.
     pub const GROUP1: [(super::Key, u16); 4] =
-        [(super::Key::Back, 3512), (super::Key::Confirm, 2694), (super::Key::Left, 1493), (super::Key::Right, 5)];
-    /// Group 2 levels.
-    pub const GROUP2: [(super::Key, u16); 2] = [(super::Key::Up, 2242), (super::Key::Down, 5)];
-    /// Above this the ladder is idle (no key).
-    pub const IDLE_ABOVE: u16 = 3850;
+        [(super::Key::Left, 2620), (super::Key::Back, 1997), (super::Key::Confirm, 1096), (super::Key::Right, 0)];
+    /// Group 2, the key either side of the display.
+    pub const GROUP2: [(super::Key, u16); 2] = [(super::Key::Up, 1666), (super::Key::Down, 2)];
+    /// Above this the ladder is idle (no key). Idle reads 3052; the nearest key is 2620.
+    pub const IDLE_ABOVE: u16 = 2850;
+    /// How far a sample may sit from a group 1 level and still count as that key.
+    ///
+    /// The closest pair there is 623 mV apart, so the window has to stay under half of
+    /// that or the two keys overlap and the wrong one wins.
+    pub const WINDOW1: u16 = 280;
+    /// The same for group 2, which has only two levels 1664 mV apart and so can be far
+    /// more forgiving. A tight window here is what makes a side key answer only
+    /// sometimes: its contact resistance varies with how hard it is pressed, and a
+    /// reading that drifts a few hundred millivolts should still be the key it plainly
+    /// is, since there is nothing else on that ladder for it to be confused with.
+    pub const WINDOW2: u16 = 700;
 }
 
 /// Calibrated ladder levels (a unit can store its own from the calibration screen).
@@ -35,7 +59,7 @@ impl Default for Ladders {
 impl Ladders {
     /// Decode one group's reading: the level nearest the sample, or none when idle or
     /// farther than half a band from every level.
-    pub fn decode(levels: &[(Key, u16)], idle_above: u16, mv: u16) -> Option<Key> {
+    pub fn decode(levels: &[(Key, u16)], idle_above: u16, mv: u16, window: u16) -> Option<Key> {
         if mv >= idle_above {
             return None;
         }
@@ -47,16 +71,15 @@ impl Ladders {
             }
         }
         let (k, d) = best?;
-        // Bands are at least 1100 mV apart; accept within 550 mV.
-        (d <= 550).then_some(k)
+        (d <= window).then_some(k)
     }
     /// Decode group 1.
     pub fn group1(&self, mv: u16) -> Option<Key> {
-        Self::decode(&self.group1, self.idle_above, mv)
+        Self::decode(&self.group1, self.idle_above, mv, levels::WINDOW1)
     }
     /// Decode group 2.
     pub fn group2(&self, mv: u16) -> Option<Key> {
-        Self::decode(&self.group2, self.idle_above, mv)
+        Self::decode(&self.group2, self.idle_above, mv, levels::WINDOW2)
     }
 }
 
@@ -181,23 +204,29 @@ mod tests {
     #[test]
     fn decodes_ladders() {
         let l = Ladders::default();
-        assert_eq!(l.group1(3500), Some(Key::Back));
-        assert_eq!(l.group1(2700), Some(Key::Confirm));
-        assert_eq!(l.group1(1400), Some(Key::Left));
-        assert_eq!(l.group1(20), Some(Key::Right));
+        // The readings an X3 actually gives, key by key.
+        assert_eq!(l.group1(2620), Some(Key::Left));
+        assert_eq!(l.group1(1997), Some(Key::Back));
+        assert_eq!(l.group1(1096), Some(Key::Confirm));
+        assert_eq!(l.group1(0), Some(Key::Right));
+        assert_eq!(l.group2(1666), Some(Key::Up));
+        assert_eq!(l.group2(2), Some(Key::Down));
+        // Idle is 3052 on both ladders and must read as no key at all: this is the
+        // reading that used to come back as Confirm held down for ever.
+        assert_eq!(l.group1(3052), None);
+        assert_eq!(l.group2(3052), None);
         assert_eq!(l.group1(4095), None);
-        assert_eq!(l.group2(2200), Some(Key::Up));
-        assert_eq!(l.group2(0), Some(Key::Down));
-        assert_eq!(l.group2(3300), Some(Key::Up).filter(|_| false));
+        // Neighbours are 623 mV apart, so the midpoint between them belongs to neither.
+        assert_eq!(l.group1((2620 + 1997) / 2), None);
     }
 
     #[test]
     fn short_press_needs_debounce() {
         let mut m = KeyMachine::new();
         // One noisy sample does nothing; two agreeing samples press, two idle release.
-        let ev = run(&mut m, &[(2694, 4095, false), (4095, 4095, false), (4095, 4095, false)], 10);
+        let ev = run(&mut m, &[(1096, 4095, false), (4095, 4095, false), (4095, 4095, false)], 10);
         assert!(ev.is_empty());
-        let ev = run(&mut m, &[(2694, 4095, false), (2694, 4095, false), (4095, 4095, false), (4095, 4095, false)], 10);
+        let ev = run(&mut m, &[(1096, 4095, false), (1096, 4095, false), (4095, 4095, false), (4095, 4095, false)], 10);
         assert_eq!(ev, [KeyEvent::press(Key::Confirm)]);
     }
 
@@ -228,11 +257,11 @@ mod tests {
             assert!(!m.any_touched());
             t += 25;
         }
-        out.extend(m.sample(2694, 4095, false, t));
+        out.extend(m.sample(1096, 4095, false, t));
         assert!(m.any_touched(), "first contact has to end the nap");
         for _ in 0..4 {
             t += 10;
-            out.extend(m.sample(2694, 4095, false, t));
+            out.extend(m.sample(1096, 4095, false, t));
         }
         for _ in 0..2 {
             t += 10;
@@ -244,7 +273,7 @@ mod tests {
     #[test]
     fn power_and_side_keys_are_independent() {
         let mut m = KeyMachine::new();
-        let ev = run(&mut m, &[(4095, 2242, true), (4095, 2242, true), (4095, 4095, false), (4095, 4095, false)], 10);
+        let ev = run(&mut m, &[(4095, 1666, true), (4095, 1666, true), (4095, 4095, false), (4095, 4095, false)], 10);
         assert!(ev.contains(&KeyEvent::press(Key::Up)));
         assert!(ev.contains(&KeyEvent::press(Key::Power)));
     }

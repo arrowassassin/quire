@@ -74,6 +74,8 @@ enum Resp {
     Json(StatusCode, String),
     Text(StatusCode, &'static str),
     Html(String),
+    /// A page fixed at compile time: sent as HTML without being copied to the heap.
+    StaticHtml(&'static str),
     Gz(&'static [u8], &'static str),
     Svg(&'static str),
     Redirect(StatusCode, String),
@@ -112,6 +114,13 @@ impl IntoResponse for Resp {
                 .await
             }
             Resp::Text(st, t) => rw.write_response(conn, Response::new(st, t)).await,
+            Resp::StaticHtml(h) => {
+                rw.write_response(
+                    conn,
+                    Response::ok(h).with_content_type("text/html; charset=utf-8").with_header("Cache-Control", "no-store"),
+                )
+                .await
+            }
             Resp::Html(h) => {
                 rw.write_response(
                     conn,
@@ -689,6 +698,12 @@ impl PathRouterService for DropService {
                 Resp::Html(api::captive_html(&ip, &self.hostname))
             }
             Route::CaptiveProbe => Resp::Redirect(StatusCode::FOUND, alloc::format!("http://{}/captive", super::wifi::ap_ip_text())),
+            // iOS and macOS are told what they are hoping to hear, so that they
+            // stay on a network whose whole purpose is the reader at the other
+            // end of it. It is not true — there is no route past this device —
+            // and the cost is that neither will offer its sign-in sheet, so the
+            // Drop page has to be opened by hand or by scanning the code.
+            Route::AppleProbe => Resp::StaticHtml(routes::APPLE_SUCCESS),
             Route::Status => self.status(),
             Route::Library => self.library(),
             Route::Stats => self.stats(),

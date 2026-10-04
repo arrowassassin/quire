@@ -71,13 +71,13 @@ async fn ui(ev: NetEvent) {
 /// worker exists); otherwise the answer is immediate.
 pub async fn enqueue(cmd: NetCommand, online: bool) {
     let job = match cmd {
-        NetCommand::Fetch(FetchRequest::Cancel(i)) => {
-            crate::cancel_download(i);
+        NetCommand::Fetch(FetchRequest::Cancel(url)) => {
+            crate::cancel_download(&url);
             try_post(crate::downloads_event_msg());
             return;
         }
-        NetCommand::Fetch(FetchRequest::Retry(i)) => {
-            if crate::retry_download(i) {
+        NetCommand::Fetch(FetchRequest::Retry(url)) => {
+            if crate::retry_download(&url) {
                 try_post(crate::downloads_event_msg());
                 if online {
                     let _ = JOBS.try_send(Job::Downloads);

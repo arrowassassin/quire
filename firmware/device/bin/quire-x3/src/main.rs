@@ -280,7 +280,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let mut held = 0u32;
         for _ in 0..10 {
             let (g1, _, _) = keys.raw();
-            if quire_board::keys::Ladders::decode(&quire_board::keys::levels::GROUP1, quire_board::keys::levels::IDLE_ABOVE, g1)
+            if quire_board::keys::Ladders::decode(
+                &quire_board::keys::levels::GROUP1,
+                quire_board::keys::levels::IDLE_ABOVE,
+                g1,
+                quire_board::keys::levels::WINDOW1,
+            )
                 == Some(quire_board::keys::Key::Back)
             {
                 held += 1;

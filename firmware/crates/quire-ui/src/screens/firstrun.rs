@@ -7,6 +7,7 @@ use quire_gfx::{draw_text, Frame, Ink, Rect, TextStyle};
 use crate::spine::{self, SpineModel};
 use crate::text::{draw_label, line_h, wrap};
 use crate::theme::*;
+use crate::WifiState;
 use crate::widgets::{self, rail, running_head, setting_row, RowState, SettingValue};
 use crate::{Action, Ctx, Env, Key, KeyEvent, KeyKind, Refresh, Result_, Screen, SysRequest};
 
@@ -79,7 +80,7 @@ impl<E: Env> Screen<E> for FirstRun {
                     &SettingValue::Text(quire_library::time::fmt_clock(now, cx.settings.clock_24h)),
                     RowState::Focused,
                 );
-                rail(f, ["Back", "", "Set", "Next"], None);
+                rail(f, ["", "Back", "Set", "Next"], None);
             }
             2 => {
                 running_head(f, "This is your reader", Some("3 / 4"));
@@ -103,44 +104,52 @@ impl<E: Env> Screen<E> for FirstRun {
                     }
                     y += 4;
                 }
-                rail(f, ["Back", "", "", "Next"], None);
+                rail(f, ["", "Back", "", "Next"], None);
             }
             _ => {
                 running_head(f, "Add books", Some("4 / 4"));
                 let mut y = widgets::CONTENT_TOP;
                 for l in wrap(
                     fb,
-                    "A sample book is already on the reader. Get free books from the Bookshop, or drop your own from your phone.",
+                    "The card starts empty. Get free books from the Bookshop, or drop your own from your phone.",
                     w - 2 * widgets::INSET,
                 ) {
                     draw_text(f, fb, widgets::INSET, y + fb.ascent(), &l, TextStyle::INK);
                     y += line_h(fb);
                 }
                 y += 16;
-                draw_label(f, widgets::INSET, y + fl.ascent(), "Start here", false);
+                draw_label(f, widgets::INSET, y + fl.ascent(), "Free in the Bookshop", false);
                 y += line_h(fl) + 6;
                 for (t, a, h) in super::bookshop::START_HERE {
                     widgets::row(f, y, ROW_H, t, Some(a), Some(h), RowState::Normal);
                     y += ROW_H;
                 }
                 y += 16;
-                let url = super::drop::drop_url(cx);
-                let code = crate::qr::Qr::encode(&url);
-                let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
-                if let Some(q) = &code {
-                    q.draw(f, widgets::INSET, y, 4);
+                // The address only exists while the reader is serving it. During first
+                // run the radio is still off, so printing one here — with a QR code to
+                // scan, no less — sends someone to a page that cannot answer. Drop
+                // turns the radio on and shows the address once there is one.
+                let reachable = matches!(cx.env.wifi(), WifiState::Connected { .. } | WifiState::Hotspot { .. });
+                let (hx, mut hy) = if reachable {
+                    let url = super::drop::drop_url(cx);
+                    let code = crate::qr::Qr::encode(&url);
+                    let qr = code.as_ref().map(|q| q.size_px(4)).unwrap_or(0);
+                    if let Some(q) = &code {
+                        q.draw(f, widgets::INSET, y, 4);
+                    }
+                    draw_text(f, fb, widgets::INSET + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
+                    (widgets::INSET + qr + 12, y + 30 + line_h(fb))
+                } else {
+                    (widgets::INSET, y)
+                };
+                // Beside a QR of unknown width, so this wraps into whatever is left
+                // rather than running off the edge.
+                for l in wrap(fl, "Drop: press Up for the address to open on your phone.", w - hx - widgets::INSET) {
+                    draw_text(f, fl, hx, hy, &l, TextStyle::INK);
+                    hy += line_h(fl);
                 }
-                draw_text(f, fb, widgets::INSET + qr + 12, y + 30, &url.replace("http://", ""), TextStyle::INK);
-                draw_text(
-                    f,
-                    fl,
-                    widgets::INSET + qr + 12,
-                    y + 30 + line_h(fb),
-                    "Drop: scan, then drag books onto the page.",
-                    TextStyle::INK,
-                );
                 // "Start reading" does not fit a rail cell.
-                rail(f, ["Back", "Drop", "Bookshop", "Start"], None);
+                rail(f, ["", "Back", "Bookshop", "Start"], None);
             }
         }
         Refresh::Gc
@@ -165,11 +174,16 @@ impl<E: Env> Screen<E> for FirstRun {
                 Action::Redraw
             }
             (1, Key::Confirm) => Action::Push(Box::new(TimePicker::new())),
-            (3, Key::Back) | (2, Key::Back) | (1, Key::Back) => {
+            (3, Key::Back) | (2, Key::Back) | (1, Key::Back) | (2, Key::Left) | (1, Key::Left) => {
                 self.page -= 1;
                 Action::Redraw
             }
-            (3, Key::Right) | (3, Key::Confirm) => self.finish(cx),
+            (3, Key::Right) => self.finish(cx),
+            // Slot 2 of the rail is Confirm, and it says Bookshop.
+            (3, Key::Confirm) => {
+                self.finish(cx);
+                Action::Push(Box::new(super::bookshop::BookshopHome::new()))
+            }
             (_, Key::Right) if self.page < 3 => {
                 self.page += 1;
                 Action::Redraw

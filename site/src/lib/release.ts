@@ -1,11 +1,15 @@
 /**
- * Looking up, and downloading, the factory image from a published GitHub
- * release.
+ * Looking up the factory image published with a GitHub release.
  *
- * No `v*` tag has been cut yet, so `none` is the answer people actually get
- * today. That is not an error to hide: the page says so plainly and points at
- * the CI artifact instead. The page asks first and only offers the button when
- * there is really something behind it — no dead or invented download.
+ * Only the lookup happens here. The asset itself is not fetched: GitHub serves
+ * release assets from release-assets.githubusercontent.com, which answers
+ * without an access-control-allow-origin header, so a page cannot read one
+ * whichever URL it asks for — the API asset URL redirects to the same place.
+ * The page therefore offers an ordinary download link, which CORS does not
+ * govern, and takes the file back through the picker.
+ *
+ * The page asks first and only offers the link when there is really something
+ * behind it — no dead or invented download.
  */
 import { FACTORY_IMAGE, RELEASES_API } from '../data/site'
 
@@ -68,48 +72,4 @@ export async function probeLatestRelease(signal?: AbortSignal): Promise<ReleaseP
   const asset = assets.find((a) => a.name === FACTORY_IMAGE)
   if (!asset) return { state: 'no-asset', tag }
   return { state: 'available', tag, asset: asset.name, url: asset.url, size: asset.size }
-}
-
-/** Streams a release asset, reporting bytes received against its known size. */
-export async function downloadAsset(
-  probe: Extract<ReleaseProbe, { state: 'available' }>,
-  onProgress: (done: number, total: number) => void,
-  signal?: AbortSignal,
-): Promise<Uint8Array> {
-  const res = await fetch(probe.url, signal ? { signal } : {})
-  if (!res.ok) {
-    throw new Error(
-      `Downloading ${probe.asset} failed with ${res.status}. Try again, or download the file yourself and use the file picker.`,
-    )
-  }
-
-  const declared = Number(res.headers.get('content-length') ?? '')
-  const total = Number.isFinite(declared) && declared > 0 ? declared : probe.size
-  const body = res.body
-
-  if (!body) {
-    const whole = new Uint8Array(await res.arrayBuffer())
-    onProgress(whole.length, whole.length)
-    return whole
-  }
-
-  const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let done = 0
-  for (;;) {
-    const next = await reader.read()
-    if (next.done) break
-    chunks.push(next.value)
-    done += next.value.length
-    onProgress(done, total > 0 ? total : done)
-  }
-
-  const data = new Uint8Array(done)
-  let at = 0
-  for (const chunk of chunks) {
-    data.set(chunk, at)
-    at += chunk.length
-  }
-  onProgress(done, done)
-  return data
 }

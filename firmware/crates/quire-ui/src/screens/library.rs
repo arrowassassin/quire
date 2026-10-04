@@ -350,6 +350,17 @@ impl<E: Env> Screen<E> for LibraryScreen {
             self.nav.focus = 0;
             return Action::Redraw;
         }
+        // An empty shelf offers the two ways to fill it, and the rail says so.
+        // Without these the labels are decoration: Confirm finds no item to open
+        // and Right no row to move to, so the keys under them do nothing at all.
+        if self.items.is_empty() {
+            if ev.is(Key::Confirm) {
+                return Action::Push(Box::new(super::bookshop::BookshopHome::new()));
+            }
+            if ev.is(Key::Right) {
+                return Action::Push(Box::new(super::drop::DropScreen::new()));
+            }
+        }
         if ev.is_long(Key::Confirm) {
             if let Some(Item::Book(id)) = self.items.get(self.nav.focus) {
                 return Action::Push(Box::new(BookCompass::new(*id)));
