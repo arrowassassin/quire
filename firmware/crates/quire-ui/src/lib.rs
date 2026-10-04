@@ -110,6 +110,12 @@ pub enum Refresh {
     Gc,
 }
 
+
+/// Whether an event is the reader's doing — a key on the device or the phone, text
+/// typed on the phone, or waking it — rather than something happening by itself.
+fn from_the_reader(ev: &Event) -> bool {
+    matches!(ev, Event::Key(_) | Event::PhoneKey(_) | Event::PhoneText(_) | Event::Wake)
+}
 /// Requests a screen makes of the platform.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SysRequest {
@@ -636,7 +642,21 @@ impl<E: Env> Ui<E> {
                 other => top.event(&mut cx, other),
             }
         };
+        let base_before = self.base_id();
         let refresh = self.apply(env, action);
+        // Something happening in the background — a download's progress, the Wi-Fi
+        // state, the clock — never earns a full refresh of a screen that has not
+        // changed. A full refresh blocks the whole chip for 1.2 s on this panel, the
+        // radio's included, and a screen that answers every redraw with GC (the
+        // Bookshop's book page does) turned each progress tick into one: 284 of them
+        // back to back during a 0.7 MB download, 218 s with the network starved, and a
+        // transfer estimating days. The reader's own presses keep whatever the screen
+        // asks for, and so does a change of screen, which `apply` has already decided.
+        let refresh = if refresh == Refresh::Gc && !from_the_reader(&ev) && self.base_id() == base_before {
+            Refresh::Du
+        } else {
+            refresh
+        };
         // A sleep screen on top means the device goes to sleep once this frame is on the
         // panel: persist everything and ask the platform, whichever screen put it there.
         let top = self.top_name();
