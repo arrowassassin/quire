@@ -1481,7 +1481,10 @@ impl<E: Env> Screen<E> for Downloads {
                 if cx.env.net().downloads().is_empty() {
                     return Action::Push(Box::new(BookshopHome::new()));
                 }
-                cx.env.request(SysRequest::Fetch(FetchRequest::Retry(self.nav.focus)));
+                if let Some(d) = cx.env.net().downloads().get(self.nav.focus) {
+                    let url = d.url.clone();
+                    cx.env.request(SysRequest::Fetch(FetchRequest::Retry(url)));
+                }
                 Action::Redraw
             }
             Key::Right if self.saved_tab => {
@@ -1507,7 +1510,10 @@ impl<E: Env> Screen<E> for Downloads {
                 if cx.env.net().downloads().is_empty() {
                     return Action::None;
                 }
-                cx.env.request(SysRequest::Fetch(FetchRequest::Cancel(self.nav.focus)));
+                if let Some(d) = cx.env.net().downloads().get(self.nav.focus) {
+                    let url = d.url.clone();
+                    cx.env.request(SysRequest::Fetch(FetchRequest::Cancel(url)));
+                }
                 Action::Redraw
             }
             _ => {

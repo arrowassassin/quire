@@ -35,10 +35,15 @@ pub enum FetchRequest {
     SleepPack(String),
     /// Check for a firmware update.
     OtaCheck,
-    /// Cancel a queued download by index.
-    Cancel(usize),
-    /// Retry a failed download.
-    Retry(usize),
+    /// Cancel a download, named by its URL (for an upload, its card path).
+    ///
+    /// Not by its position: the request crosses to the net task, and the list there
+    /// can be reordered in the meantime — a transfer starting moves to the end — so a
+    /// position taken from the screen's copy can name a different download by the
+    /// time it is acted on.
+    Cancel(String),
+    /// Retry a failed download, named by its URL.
+    Retry(String),
 }
 
 /// A queued or finished download.
