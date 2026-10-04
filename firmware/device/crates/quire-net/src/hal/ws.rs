@@ -29,6 +29,11 @@ impl WebSocketCallback for WsClient {
         let mut want_mirror = false;
         let mut seen_gen = u32::MAX;
         let mut frame: Vec<u8> = Vec::new();
+        // Every way out of this loop has to reach the cleanup below, a failed send
+        // included. A send fails as a matter of course — a phone locks, a tab goes to
+        // the background, the Wi-Fi blinks — and returning early with `?` from one of
+        // these skipped the decrement, so a mirror client was counted for the rest of
+        // the session and the reader kept packing frames for nobody.
         let result = loop {
             let signal = async {
                 let tick = Timer::after(MIRROR_PERIOD);
@@ -69,18 +74,30 @@ impl WebSocketCallback for WsClient {
                                 seen_gen = u32::MAX;
                             }
                         }
-                        Some(Incoming::Ping) => tx.send_text(r#"{"pong":1}"#).await?,
+                        Some(Incoming::Ping) => {
+                            if let Err(e) = tx.send_text(r#"{"pong":1}"#).await {
+                                break Err(e);
+                            }
+                        }
                         None => {}
                     }
                 }
-                Ok(PsEither::First(Ok(Message::Ping(d)))) => tx.send_pong(d).await?,
+                Ok(PsEither::First(Ok(Message::Ping(d)))) => {
+                    if let Err(e) = tx.send_pong(d).await {
+                        break Err(e);
+                    }
+                }
                 Ok(PsEither::First(Ok(Message::Close(_)))) => break Ok(()),
                 Ok(PsEither::First(Ok(Message::Binary(_) | Message::Pong(_)))) => {}
                 Ok(PsEither::First(Err(e))) => {
                     log::debug!("ws: {e:?}");
                     break Ok(());
                 }
-                Ok(PsEither::Second(Some(text))) => tx.send_text(&text).await?,
+                Ok(PsEither::Second(Some(text))) => {
+                    if let Err(e) = tx.send_text(&text).await {
+                        break Err(e);
+                    }
+                }
                 Ok(PsEither::Second(None)) => {
                     if want_mirror {
                         // Copy the packed frame out under the lock, then send it.
@@ -96,7 +113,9 @@ impl WebSocketCallback for WsClient {
                         });
                         if let Some(g) = fresh {
                             seen_gen = g;
-                            tx.send_binary(&frame).await?;
+                            if let Err(e) = tx.send_binary(&frame).await {
+                                break Err(e);
+                            }
                         }
                     }
                 }
